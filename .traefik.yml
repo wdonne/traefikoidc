@@ -1,0 +1,7 @@
+displayName: OIDC Client
+type: middleware
+import: github.com/wdonne/traefikoidc
+summary: Handles the OpenID Connect authorisation code flow
+testData:
+  Headers:
+    Authorization: Bearer
