@@ -51,7 +51,8 @@ volumes:
     mountPath: /oidc/encryption
 ```
 
-If you don't want to load the plugin through `github.com/wdonne/traefikoidc`, you can also use the image `wdonne/traefik-oidc:<version>` with an init container and an `emptyDir` volume. The container will copy the plugin to `/plugins-local`. You should add something like the following to the Traefik values file:
+If you don't want to load the plugin through `github.com/wdonne/traefikoidc`, you can also use 
+the image `wdonne/traefikoidc:<version>` with an init container and an `emptyDir` volume. The container will copy the plugin to `/plugins-local`. You should add something like the following to the Traefik values file:
 
 ```yaml
 volumes:
@@ -61,7 +62,7 @@ volumes:
 deployment:
   initContainers:
     - name: traefikoidc
-      image: wdonne/traefik-oidc:1.0
+      image: wdonne/traefikoidc:v1.0.0
       volumeMounts:
         - name: traefikoidc
           mountPath: /plugins-local

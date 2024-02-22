@@ -1,2 +1,2 @@
-docker build . -t wdonne/traefik-oidc:1.0
-docker push wdonne/traefik-oidc:1.0
+docker build . -t wdonne/traefikoidc:v1.0.0
+docker push wdonne/traefikoidc:v1.0.0
