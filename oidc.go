@@ -280,7 +280,7 @@ func bearerToken(req *http.Request) string {
 }
 
 func callbackUrl(req *http.Request) string {
-	return url.QueryEscape("https://" + req.URL.Host + callback)
+	return url.QueryEscape("https://" + req.Host + callback)
 }
 
 func cookieExpires(value string) time.Time {
@@ -835,17 +835,6 @@ func (serve *Serve) parseToken(token string) (*jwt.Token, error) {
 	t, _, err := serve.parser.ParseUnverified(token, jwt.MapClaims{})
 
 	return t, err
-}
-
-func random(size int) ([]byte, error) {
-	b := make([]byte, size)
-	_, err := rand.Read(b)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return b, nil
 }
 
 func readClientSecret(file string) (*secret, error) {

@@ -62,7 +62,7 @@ volumes:
 deployment:
   initContainers:
     - name: traefikoidc
-      image: wdonne/traefikoidc:v1.0.0
+      image: wdonne/traefikoidc:v1.0.1
       volumeMounts:
         - name: traefikoidc
           mountPath: /plugins-local
