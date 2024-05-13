@@ -37,10 +37,10 @@ const (
 	errorDescriptionField       = "error_description"
 	idpField                    = "idp"
 	logout                      = "/logout"
+	logoutself                  = "/logoutself"
 	offlineAccess               = "offline_access"
 	requestedWithHeader         = "X-Requested-With"
 	rsaType                     = "RSA"
-	self                        = "self"
 	sig                         = "sig"
 	stateField                  = "state"
 	wellKnown                   = ".well-known/openid-configuration"
@@ -48,8 +48,10 @@ const (
 )
 
 type Config struct {
+	ContextPath          string       `json:"contextPath,omitempty"`
 	EncryptionSecretFile string       `json:"encryptionSecretFile,omitempty"`
 	Idps                 []*IdpConfig `json:"idps"`
+	LazyDiscovery        bool         `json:"lazyDiscovery,omitempty"`
 }
 
 type IdpConfig struct {
@@ -61,11 +63,12 @@ type IdpConfig struct {
 }
 
 type Serve struct {
-	secret               []byte
+	config               *Config
 	encryptionSecretFile *secretFile
 	idps                 []*idp
 	next                 http.Handler
 	parser               *jwt.Parser
+	secret               []byte
 }
 
 type authenticationResponse struct {
@@ -100,6 +103,7 @@ type idTokenResponse struct {
 type idp struct {
 	clientSecret     *secret
 	clientSecretFile *secretFile
+	contextPath      string
 	discovered       *discovered
 	ecdsaKeys        []*ecdsa.PublicKey
 	name             string
@@ -137,11 +141,16 @@ func CreateConfig() *Config {
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	idps, err := discoverIdps(config)
+	var idps []*idp = nil
 
-	if err != nil {
-		fmt.Println(err.Error())
-		return nil, err
+	if !config.LazyDiscovery {
+		var err error = nil
+		idps, err = discoverIdps(config)
+
+		if err != nil {
+			fmt.Println(err.Error())
+			return nil, err
+		}
 	}
 
 	encryptionSecretFile := config.EncryptionSecretFile
@@ -151,6 +160,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	return &Serve{
+		config:               config,
 		encryptionSecretFile: &secretFile{filename: encryptionSecretFile, timestamp: -1},
 		idps:                 idps,
 		next:                 next,
@@ -159,8 +169,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	err := serve.lazyDiscoverIdps()
+
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	if isCallback(req) {
 		serve.handleCallback(rw, req)
+	} else if serve.isLogoutSelf(req) {
+		serve.logoutIdp(rw, req)
 	} else {
 		_, i, err := serve.validToken(req)
 
@@ -176,9 +195,9 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		} else {
 			fmt.Println("Valid token")
 
-			if isLogout(req) {
+			if serve.isLogout(req) {
 				fmt.Println("Logging out")
-				serve.handleLogout(rw, req, i)
+				serve.logoutSelf(rw, req, i)
 			} else {
 				setBearerToken(req)
 				serve.next.ServeHTTP(rw, req)
@@ -208,7 +227,7 @@ func appendRsa(rsaKeys []*rsa.PublicKey, k *key) ([]*rsa.PublicKey, error) {
 }
 
 func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
-	i, err := serve.getIdp(req.URL.Query().Get(idpField))
+	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
@@ -249,7 +268,7 @@ func (serve *Serve) authenticationUrl(req *http.Request, idp *idp) (string, erro
 			"&client_id=" +
 			s.ClientID +
 			"&redirect_uri=" +
-			callbackUrl(req) +
+			callbackUrl(req, serve.config.ContextPath) +
 			"&scope=" +
 			idp.scopeParameter +
 			"&" +
@@ -270,7 +289,7 @@ func bearerToken(req *http.Request) string {
 		return ""
 	}
 
-	parts := strings.Split(header, "")
+	parts := strings.Split(header, " ")
 
 	if len(parts) != 2 && !isBearer(parts[0]) {
 		return ""
@@ -279,8 +298,8 @@ func bearerToken(req *http.Request) string {
 	return parts[1]
 }
 
-func callbackUrl(req *http.Request) string {
-	return url.QueryEscape("https://" + req.Host + callback)
+func callbackUrl(req *http.Request, contextPath string) string {
+	return url.QueryEscape("https://" + req.Host + contextPath + callback)
 }
 
 func cookieExpires(value string) time.Time {
@@ -401,8 +420,8 @@ func discover(providerUrl string) (*discovered, error) {
 	return &res, err
 }
 
-func discoverIdp(config *IdpConfig) (*idp, error) {
-	disc, err := discover(config.ProviderUrl)
+func discoverIdp(idpConfig *IdpConfig, config *Config) (*idp, error) {
+	disc, err := discover(idpConfig.ProviderUrl)
 
 	if err != nil {
 		return nil, err
@@ -414,7 +433,7 @@ func discoverIdp(config *IdpConfig) (*idp, error) {
 		return nil, err
 	}
 
-	clientSecretFile := config.ClientSecretFile
+	clientSecretFile := idpConfig.ClientSecretFile
 
 	if clientSecretFile == "" {
 		clientSecretFile = defaultClientSecretFile
@@ -422,19 +441,20 @@ func discoverIdp(config *IdpConfig) (*idp, error) {
 
 	return &idp{
 		clientSecretFile: &secretFile{filename: clientSecretFile, timestamp: -1},
+		contextPath:      config.ContextPath,
 		discovered:       disc,
 		ecdsaKeys:        ecdsaKeys,
-		name:             config.Name,
-		postLogoutUrl:    config.PostLogoutUrl,
+		name:             idpConfig.Name,
+		postLogoutUrl:    idpConfig.PostLogoutUrl,
 		rsaKeys:          rsaKeys,
-		scopeParameter:   scopeParameter(scopes(config.Scopes, disc.ScopesSupported))}, nil
+		scopeParameter:   scopeParameter(scopes(idpConfig.Scopes, disc.ScopesSupported))}, nil
 }
 
 func discoverIdps(config *Config) ([]*idp, error) {
 	idps := make([]*idp, len(config.Idps))
 
 	for i := 0; i < len(config.Idps); i++ {
-		idp, err := discoverIdp(config.Idps[i])
+		idp, err := discoverIdp(config.Idps[i], config)
 
 		if err != nil {
 			return nil, err
@@ -480,9 +500,9 @@ func encrypt(s string, secret []byte) (string, error) {
 func (idp *idp) endSessionUrl(req *http.Request) string {
 	return idp.discovered.EndSessionEndpoint +
 		"?client_id=" +
-		callbackUrl(req) +
+		callbackUrl(req, idp.contextPath) +
 		"&post_logout_redirect_uri=" +
-		logoutUrl(req)
+		idp.logoutUrl()
 }
 
 func extractEcdsaKey(crv, x, y string) (*ecdsa.PublicKey, error) {
@@ -714,6 +734,10 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 	return nil, errors.New("idp is not configured for issuer " + issuer)
 }
 
+func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
+	return serve.getIdp(req.URL.Query().Get(idpField))
+}
+
 func getToken(req *http.Request) (string, error) {
 	if token := bearerToken(req); token != "" {
 		return token, nil
@@ -752,25 +776,8 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 	} else {
-		setAccessTokenCookie(rw, req, tokenRes.IdToken)
+		serve.setAccessTokenCookie(rw, req, tokenRes.IdToken)
 		http.Redirect(rw, req, authRes.originalUrl, http.StatusFound)
-	}
-}
-
-func (serve *Serve) handleLogout(rw http.ResponseWriter, req *http.Request, idp *idp) {
-	if idp.postLogoutUrl == "" {
-		http.Error(rw, "not implemented", http.StatusNotImplemented)
-	} else {
-		if isLogoutSelf(req) {
-			setAccessTokenCookie(rw, req, deleted)
-			http.Redirect(rw, req, idp.postLogoutUrl, http.StatusFound)
-		} else {
-			if idp.discovered.EndSessionEndpoint != "" {
-				http.Redirect(rw, req, idp.endSessionUrl(req), http.StatusFound)
-			} else {
-				http.Redirect(rw, req, logout+"?self=true", http.StatusFound)
-			}
-		}
 	}
 }
 
@@ -796,16 +803,36 @@ func isCallback(req *http.Request) bool {
 	return req.URL.Path == callback
 }
 
-func isLogout(req *http.Request) bool {
-	return req.URL.Path == logout
+func (serve *Serve) isLogout(req *http.Request) bool {
+	return serve.isPath(req, logout)
 }
 
-func isLogoutSelf(req *http.Request) bool {
-	return isLogout(req) && req.URL.Query().Get(self) == "true"
+func (serve *Serve) isLogoutSelf(req *http.Request) bool {
+	return serve.isPath(req, logoutself)
+}
+
+func (serve *Serve) isPath(req *http.Request, path string) bool {
+	return req.URL.Path == serve.config.ContextPath+path
 }
 
 func isXhr(req *http.Request) bool {
 	return req.Header.Get(requestedWithHeader) == xmlHttpRequest
+}
+
+func (serve *Serve) lazyDiscoverIdps() error {
+	if serve.idps == nil {
+		var err error = nil
+
+		serve.idps, err = discoverIdps(serve.config)
+
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+
+		return err
+	}
+
+	return nil
 }
 
 func loadKeys(jwksUri string) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
@@ -827,8 +854,32 @@ func loadKeys(jwksUri string) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
 	return extractKeys(&loaded)
 }
 
-func logoutUrl(req *http.Request) string {
-	return url.QueryEscape("https://" + req.URL.Host + logout + "?" + self + "=true")
+func (serve *Serve) logoutIdp(rw http.ResponseWriter, req *http.Request) {
+	idp, err := serve.getIdpForRequest(req)
+
+	if err != nil {
+		http.Error(rw, "No IDP found", http.StatusNotFound)
+	} else if idp.postLogoutUrl == "" {
+		http.Error(rw, "not implemented", http.StatusNotImplemented)
+	} else if idp.discovered.EndSessionEndpoint != "" {
+		http.Redirect(rw, req, idp.endSessionUrl(req), http.StatusFound)
+	} else {
+		http.Redirect(rw, req, idp.postLogoutUrl, http.StatusFound)
+	}
+}
+
+func (serve *Serve) logoutSelf(rw http.ResponseWriter, req *http.Request, idp *idp) {
+	serve.setAccessTokenCookie(rw, req, deleted)
+	http.Redirect(rw, req, serve.logoutSelfUrl(req, idp), http.StatusFound)
+}
+
+func (serve *Serve) logoutSelfUrl(req *http.Request, idp *idp) string {
+	return "https://" + req.URL.Host + serve.config.ContextPath + logoutself + "?" + idpField +
+		"=" + idp.name
+}
+
+func (idp *idp) logoutUrl() string {
+	return url.QueryEscape(idp.postLogoutUrl)
 }
 
 func (serve *Serve) parseToken(token string) (*jwt.Token, error) {
@@ -889,11 +940,11 @@ func scopes(configured []string, discovered []string) []string {
 	return withoutOfflineAccess(discovered)
 }
 
-func setAccessTokenCookie(rw http.ResponseWriter, req *http.Request, value string) {
+func (serve *Serve) setAccessTokenCookie(rw http.ResponseWriter, req *http.Request, value string) {
 	http.SetCookie(rw, &http.Cookie{
 		Name:     accessToken,
 		Value:    value,
-		Path:     "/",
+		Path:     serve.config.ContextPath + "/",
 		Domain:   req.Host,
 		SameSite: http.SameSiteNoneMode,
 		Secure:   true,
@@ -930,7 +981,7 @@ func (idp *idp) tokenRequestBody(code string, req *http.Request) (io.Reader, err
 			"&client_secret=" +
 			c.ClientSecret +
 			"&redirect_uri=" +
-			callbackUrl(req)),
+			callbackUrl(req, idp.contextPath)),
 		nil
 }
 
