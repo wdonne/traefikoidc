@@ -19,6 +19,8 @@ You log out with the URL `https://<your-domain>/<contextPath>/logout`. If the ID
 |idps.providerUrl|Yes|None|The OpenID Connect discovery URL.|
 |idps.scopes|No|The discovered values except `offline_access`|An array of scope names.|
 |lazyDiscovery|No|`false`|When set, it postpones the IDP discovery phase until the first request arrives.|
+|notBearerToken|No|`false`|Adds the "Bearer " prefix to the token header value.|
+|tokenHeader|No|Authorization|Sets the name of the HTTP header on the request that is forwarded. You can use this, for example, to emulate JWT Proxy by setting the name to `X-JWT-Assertion` and the configuration field `notBearerToken` to `true`.|
 
 This is an example of a middleware configuration:
 

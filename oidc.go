@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -52,6 +53,8 @@ type Config struct {
 	EncryptionSecretFile string       `json:"encryptionSecretFile,omitempty"`
 	Idps                 []*IdpConfig `json:"idps"`
 	LazyDiscovery        bool         `json:"lazyDiscovery,omitempty"`
+	NotBearerToken       bool         `json:"notBearerToken,omitempty"`
+	TokenHeader          string       `json:"tokenHeader,omitempty"`
 }
 
 type IdpConfig struct {
@@ -148,7 +151,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		idps, err = discoverIdps(config)
 
 		if err != nil {
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 			return nil, err
 		}
 	}
@@ -157,6 +160,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	if encryptionSecretFile == "" {
 		encryptionSecretFile = defaultEncryptionSecretFile
+	}
+
+	if config.TokenHeader == "" {
+		config.TokenHeader = authorization
 	}
 
 	return &Serve{
@@ -176,7 +183,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if isCallback(req) {
+	if serve.isCallback(req) {
 		serve.handleCallback(rw, req)
 	} else if serve.isLogoutSelf(req) {
 		serve.logoutIdp(rw, req)
@@ -184,7 +191,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_, i, err := serve.validToken(req)
 
 		if err != nil {
-			fmt.Println("Invalid token")
+			log.Println("Invalid token")
 
 			if isXhr(req) {
 				http.Error(rw, "Unauthorized", http.StatusUnauthorized)
@@ -199,7 +206,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				fmt.Println("Logging out")
 				serve.logoutSelf(rw, req, i)
 			} else {
-				setBearerToken(req)
+				serve.setTokenOnHeader(req)
 				serve.next.ServeHTTP(rw, req)
 			}
 		}
@@ -237,7 +244,7 @@ func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
 		if err == nil {
 			http.Redirect(rw, req, u, http.StatusFound)
 		} else {
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 			http.Error(rw, "Bad request", http.StatusBadRequest)
 		}
 	}
@@ -799,7 +806,11 @@ func isBearer(s string) bool {
 	return strings.ToLower(s) == bearer
 }
 
-func isCallback(req *http.Request) bool {
+func (serve *Serve) isCallback(req *http.Request) bool {
+	if serve.config.ContextPath != "" {
+		return req.URL.Path == serve.config.ContextPath+callback
+	}
+
 	return req.URL.Path == callback
 }
 
@@ -826,7 +837,7 @@ func (serve *Serve) lazyDiscoverIdps() error {
 		serve.idps, err = discoverIdps(serve.config)
 
 		if err != nil {
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 		}
 
 		return err
@@ -941,10 +952,16 @@ func scopes(configured []string, discovered []string) []string {
 }
 
 func (serve *Serve) setAccessTokenCookie(rw http.ResponseWriter, req *http.Request, value string) {
+	p := serve.config.ContextPath
+
+	if p == "" {
+		p = "/"
+	}
+
 	http.SetCookie(rw, &http.Cookie{
 		Name:     accessToken,
 		Value:    value,
-		Path:     serve.config.ContextPath + "/",
+		Path:     p,
 		Domain:   req.Host,
 		SameSite: http.SameSiteNoneMode,
 		Secure:   true,
@@ -953,17 +970,23 @@ func (serve *Serve) setAccessTokenCookie(rw http.ResponseWriter, req *http.Reque
 	})
 }
 
-func setBearerToken(req *http.Request) {
+func (serve *Serve) setTokenOnHeader(req *http.Request) {
 	token, err := getToken(req)
 
 	if err == nil {
-		req.Header.Set(authorization, bearer+" "+token)
+		tok := token
+
+		if !serve.config.NotBearerToken {
+			tok = bearer + " " + token
+		}
+
+		req.Header.Set(serve.config.TokenHeader, tok)
 	}
 }
 
 func streamCloser(closer io.Closer, errorMessage string) {
 	if err := closer.Close(); err != nil {
-		fmt.Println(errorMessage)
+		log.Println(errorMessage)
 	}
 }
 
@@ -1022,8 +1045,6 @@ func (serve *Serve) validateIdToken(token string, idp *idp) (*jwt.Token, error) 
 	}
 
 	if idp.discovered.Issuer != issuer {
-		fmt.Println(idp.discovered.Issuer)
-		fmt.Println(issuer)
 		return nil, errors.New("the issuer doesn't match")
 	}
 
