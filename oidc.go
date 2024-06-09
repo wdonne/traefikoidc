@@ -1076,7 +1076,7 @@ func (serve *Serve) validateJwt(token *jwt.Token, unparsedToken string, idp *idp
 		return trySpecificPublicKeys(unparsedToken, idp.rsaKeys, serve)
 	}
 
-	if strings.HasPrefix(token.Method.Alg(), "EC") {
+	if (strings.HasPrefix(token.Method.Alg(), "EC") || strings.HasPrefix(token.Method.Alg(), "ES")) {
 		return trySpecificPublicKeys(unparsedToken, idp.ecdsaKeys, serve)
 	}
 
