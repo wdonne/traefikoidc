@@ -191,7 +191,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_, i, err := serve.validToken(req)
 
 		if err != nil {
-			log.Println("Invalid token")
+			log.Println("Invalid token: " + err.Error())
 
 			if isXhr(req) {
 				http.Error(rw, "Unauthorized", http.StatusUnauthorized)
@@ -986,7 +986,7 @@ func (serve *Serve) setTokenOnHeader(req *http.Request) {
 
 func streamCloser(closer io.Closer, errorMessage string) {
 	if err := closer.Close(); err != nil {
-		log.Println(errorMessage)
+		log.Println(errorMessage + "\n" + err.Error())
 	}
 }
 
@@ -1076,7 +1076,7 @@ func (serve *Serve) validateJwt(token *jwt.Token, unparsedToken string, idp *idp
 		return trySpecificPublicKeys(unparsedToken, idp.rsaKeys, serve)
 	}
 
-	if (strings.HasPrefix(token.Method.Alg(), "EC") || strings.HasPrefix(token.Method.Alg(), "ES")) {
+	if strings.HasPrefix(token.Method.Alg(), "EC") || strings.HasPrefix(token.Method.Alg(), "ES") {
 		return trySpecificPublicKeys(unparsedToken, idp.ecdsaKeys, serve)
 	}
 
