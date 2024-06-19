@@ -179,6 +179,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	err := serve.lazyDiscoverIdps()
 
 	if err != nil {
+		log.Println(err.Error())
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -191,8 +192,6 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_, i, err := serve.validToken(req)
 
 		if err != nil {
-			log.Println("Invalid token: " + err.Error())
-
 			if isXhr(req) {
 				http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 			} else {
@@ -237,6 +236,7 @@ func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
+		log.Println(err.Error())
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	} else {
 		u, err := serve.authenticationUrl(req, i)
@@ -757,6 +757,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	authRes, err := serve.getAuthenticationResponse(req)
 
 	if err != nil {
+		log.Println(err.Error())
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -765,6 +766,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdp(authRes.idp)
 
 	if err != nil {
+		log.Println(err.Error())
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -773,6 +775,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	tokenRes, err := i.getIdToken(authRes, req)
 
 	if err != nil {
+		log.Println(err.Error())
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -781,6 +784,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	_, err = serve.validateIdToken(tokenRes.IdToken, i)
 
 	if err != nil {
+		log.Println(err.Error() + " for token " + tokenRes.IdToken)
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 	} else {
 		serve.setAccessTokenCookie(rw, req, tokenRes.IdToken)
@@ -1093,18 +1097,21 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 	tok, err := serve.parseToken(token)
 
 	if err != nil {
+		log.Println(err.Error() + " for token " + token)
 		return nil, nil, err
 	}
 
 	issuer, err := tok.Claims.GetIssuer()
 
 	if err != nil {
+		log.Println(err.Error() + " for token " + token)
 		return nil, nil, err
 	}
 
 	i, err := serve.getIdpForIssuer(issuer)
 
 	if err != nil {
+		log.Println(err.Error() + " for token " + token)
 		return nil, nil, err
 	}
 
@@ -1114,6 +1121,7 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 		return t, i, nil
 	}
 
+	log.Println(err.Error() + " for token " + token)
 	return nil, nil, err
 }
 
