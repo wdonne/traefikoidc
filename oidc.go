@@ -36,10 +36,14 @@ const (
 	defaultIdp                  = "default"
 	ecType                      = "EC"
 	errorDescriptionField       = "error_description"
+	forRequest                  = " for request "
+	forToken                    = " for token "
 	idpField                    = "idp"
+	kid                         = "kid"
 	logout                      = "/logout"
 	logoutself                  = "/logoutself"
 	offlineAccess               = "offline_access"
+	redirectTo                  = "Redirect to "
 	requestedWithHeader         = "X-Requested-With"
 	rsaType                     = "RSA"
 	sig                         = "sig"
@@ -93,6 +97,11 @@ type discovered struct {
 	UserinfoEndpoint                           string   `json:"userinfo_endpoint,omitempty"`
 }
 
+type ecdsaKey struct {
+	key *ecdsa.PublicKey
+	kid string
+}
+
 type encryptionSecret struct {
 	Secret string `json:"secret"`
 }
@@ -108,16 +117,17 @@ type idp struct {
 	clientSecretFile *secretFile
 	contextPath      string
 	discovered       *discovered
-	ecdsaKeys        []*ecdsa.PublicKey
+	ecdsaKeys        []*ecdsaKey
 	name             string
 	postLogoutUrl    string
-	rsaKeys          []*rsa.PublicKey
+	rsaKeys          []*rsaKey
 	scopeParameter   string
 }
 
 type key struct {
 	Crv string `json:"crv,omitempty"`
 	E   string `json:"e,omitempty"`
+	Kid string `json:"kid"`
 	Kty string `json:"kty"`
 	N   string `json:"n,omitempty"`
 	Use string `json:"use,omitempty"`
@@ -127,6 +137,11 @@ type key struct {
 
 type keys struct {
 	Keys []key `json:"Keys"`
+}
+
+type rsaKey struct {
+	key *rsa.PublicKey
+	kid string
 }
 
 type secret struct {
@@ -179,14 +194,16 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	err := serve.lazyDiscoverIdps()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	if serve.isCallback(req) {
+		fmt.Println("Callback from " + req.URL.String())
 		serve.handleCallback(rw, req)
 	} else if serve.isLogoutSelf(req) {
+		fmt.Println("Log out of IDP")
 		serve.logoutIdp(rw, req)
 	} else {
 		_, i, err := serve.validToken(req)
@@ -212,8 +229,8 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func appendEcdsa(ecdsaKeys []*ecdsa.PublicKey, k *key) ([]*ecdsa.PublicKey, error) {
-	extracted, err := extractEcdsaKey(k.Crv, k.X, k.Y)
+func appendEcdsa(ecdsaKeys []*ecdsaKey, k *key) ([]*ecdsaKey, error) {
+	extracted, err := extractEcdsaKey(k)
 
 	if err != nil {
 		return nil, err
@@ -222,8 +239,8 @@ func appendEcdsa(ecdsaKeys []*ecdsa.PublicKey, k *key) ([]*ecdsa.PublicKey, erro
 	return append(ecdsaKeys, extracted), nil
 }
 
-func appendRsa(rsaKeys []*rsa.PublicKey, k *key) ([]*rsa.PublicKey, error) {
-	extracted, err := extractRsaKey(k.N, k.E)
+func appendRsa(rsaKeys []*rsaKey, k *key) ([]*rsaKey, error) {
+	extracted, err := extractRsaKey(k)
 
 	if err != nil {
 		return nil, err
@@ -236,15 +253,16 @@ func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	} else {
 		u, err := serve.authenticationUrl(req, i)
 
 		if err == nil {
+			fmt.Println(redirectTo + u)
 			http.Redirect(rw, req, u, http.StatusFound)
 		} else {
-			log.Println(err.Error())
+			log.Println(err.Error() + forRequest + requestToString(req))
 			http.Error(rw, "Bad request", http.StatusBadRequest)
 		}
 	}
@@ -309,19 +327,15 @@ func callbackUrl(req *http.Request, contextPath string) string {
 	return url.QueryEscape("https://" + req.Host + contextPath + callback)
 }
 
-func cookieExpires(value string) time.Time {
-	if value == deleted {
-		return time.UnixMilli(0)
-	}
-
-	return time.Now().Add(time.Duration(30 * 24 * 60 * 60 * 1000 * 1000 * 1000))
-}
-
 func cookieToken(req *http.Request) (string, error) {
 	cookie, err := req.Cookie(accessToken)
 
-	if err != nil || cookie.Value == deleted {
+	if err != nil {
 		return "", err
+	}
+
+	if cookie.Value == deleted {
+		return "", errors.New("deleted token cookie")
 	}
 
 	return cookie.Value, nil
@@ -372,7 +386,7 @@ func decrypt(s string, secret []byte) (string, error) {
 	gcm, err := getGcm(secret)
 
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
 	nonceSize := gcm.NonceSize()
@@ -381,7 +395,7 @@ func decrypt(s string, secret []byte) (string, error) {
 	decrypted, err := gcm.Open(nil, nonce, encrypted, nil)
 
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
 	return string(decrypted), nil
@@ -512,26 +526,27 @@ func (idp *idp) endSessionUrl(req *http.Request) string {
 		idp.logoutUrl()
 }
 
-func extractEcdsaKey(crv, x, y string) (*ecdsa.PublicKey, error) {
-	decodedX, err := decodeBigInt(x)
+func extractEcdsaKey(key *key) (*ecdsaKey, error) {
+	decodedX, err := decodeBigInt(key.X)
 
 	if err != nil {
 		return nil, err
 	}
 
-	decodedY, err := decodeBigInt(y)
+	decodedY, err := decodeBigInt(key.Y)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &ecdsa.PublicKey{Curve: curve(crv), X: decodedX, Y: decodedY}, nil
+	return &ecdsaKey{key: &ecdsa.PublicKey{Curve: curve(key.Crv), X: decodedX, Y: decodedY},
+		kid: key.Kid}, nil
 }
 
-func extractKeys(keys *keys) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
-	ecdsaKeys := []*ecdsa.PublicKey{}
+func extractKeys(keys *keys) ([]*rsaKey, []*ecdsaKey, error) {
+	ecdsaKeys := []*ecdsaKey{}
 	var err error = nil
-	rsaKeys := []*rsa.PublicKey{}
+	rsaKeys := []*rsaKey{}
 
 	for i := 0; i < len(keys.Keys) && err == nil; i++ {
 		k := keys.Keys[i]
@@ -556,20 +571,20 @@ func extractKeys(keys *keys) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
 	return rsaKeys, ecdsaKeys, nil
 }
 
-func extractRsaKey(n, e string) (*rsa.PublicKey, error) {
-	decodedN, err := decodeBigInt(n)
+func extractRsaKey(key *key) (*rsaKey, error) {
+	decodedN, err := decodeBigInt(key.N)
 
 	if err != nil {
 		return nil, err
 	}
 
-	decodedE, err := decodeInt(e)
+	decodedE, err := decodeInt(key.E)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &rsa.PublicKey{N: decodedN, E: decodedE}, nil
+	return &rsaKey{key: &rsa.PublicKey{N: decodedN, E: decodedE}, kid: key.Kid}, nil
 }
 
 func fileChanged(file *secretFile) (bool, error) {
@@ -588,6 +603,26 @@ func fileChanged(file *secretFile) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (idp *idp) findEcdsaKey(kid string) *ecdsaKey {
+	for i := 0; i < len(idp.ecdsaKeys); i++ {
+		if kid == idp.ecdsaKeys[i].kid {
+			return idp.ecdsaKeys[i]
+		}
+	}
+
+	return nil
+}
+
+func (idp *idp) findRsaKey(kid string) *rsaKey {
+	for i := 0; i < len(idp.rsaKeys); i++ {
+		if kid == idp.rsaKeys[i].kid {
+			return idp.rsaKeys[i]
+		}
+	}
+
+	return nil
 }
 
 func (serve *Serve) getAuthenticationResponse(req *http.Request) (*authenticationResponse, error) {
@@ -614,7 +649,7 @@ func (serve *Serve) getAuthenticationResponse(req *http.Request) (*authenticatio
 	decrypted, err := decrypt(q.Get(stateField), sec)
 
 	if err != nil {
-		return nil, nil // Not my callback.
+		return nil, err
 	}
 
 	idpName := getIdp(decrypted)
@@ -643,6 +678,32 @@ func (idp *idp) getClientSecret() (*secret, error) {
 	}
 
 	return idp.clientSecret, nil
+}
+
+func (idp *idp) getEcdsaKey(kid string) (*ecdsa.PublicKey, error) {
+	k := idp.findEcdsaKey(kid)
+
+	if k != nil {
+		return k.key, nil
+	}
+
+	err := idp.reloadKeys()
+
+	if err != nil {
+		return nil, err
+	}
+
+	k = idp.findEcdsaKey(kid)
+
+	if k == nil {
+		for i := range idp.ecdsaKeys {
+			fmt.Print(" " + idp.ecdsaKeys[i].kid)
+		}
+
+		return nil, errors.New("unknown kid " + kid)
+	}
+
+	return k.key, nil
 }
 
 func (serve *Serve) getEncryptionSecret() ([]byte, error) {
@@ -745,6 +806,32 @@ func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 	return serve.getIdp(req.URL.Query().Get(idpField))
 }
 
+func (idp *idp) getRsaKey(kid string) (*rsa.PublicKey, error) {
+	k := idp.findRsaKey(kid)
+
+	if k != nil {
+		return k.key, nil
+	}
+
+	err := idp.reloadKeys()
+
+	if err != nil {
+		return nil, err
+	}
+
+	k = idp.findRsaKey(kid)
+
+	if k == nil {
+		for i := range idp.ecdsaKeys {
+			fmt.Print(" " + idp.ecdsaKeys[i].kid)
+		}
+
+		return nil, errors.New("unknown kid " + kid)
+	}
+
+	return k.key, nil
+}
+
 func getToken(req *http.Request) (string, error) {
 	if token := bearerToken(req); token != "" {
 		return token, nil
@@ -757,7 +844,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	authRes, err := serve.getAuthenticationResponse(req)
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -766,7 +853,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdp(authRes.idp)
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -775,7 +862,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	tokenRes, err := i.getIdToken(authRes, req)
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -784,16 +871,28 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	_, err = serve.validateIdToken(tokenRes.IdToken, i)
 
 	if err != nil {
-		log.Println(err.Error() + " for token " + tokenRes.IdToken)
+		log.Println(err.Error() + forToken + tokenRes.IdToken + " and" + forRequest +
+			requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 	} else {
 		serve.setAccessTokenCookie(rw, req, tokenRes.IdToken)
+		fmt.Println(redirectTo + authRes.originalUrl)
 		http.Redirect(rw, req, authRes.originalUrl, http.StatusFound)
 	}
 }
 
 func hasValues(s []string) bool {
 	return s != nil && len(s) > 0
+}
+
+func headerToString(header http.Header) string {
+	s := ""
+
+	for k, v := range header {
+		s += k + ": " + strings.Join(v, ",") + " "
+	}
+
+	return s
 }
 
 func indexOf(a []string, e string) int {
@@ -850,7 +949,7 @@ func (serve *Serve) lazyDiscoverIdps() error {
 	return nil
 }
 
-func loadKeys(jwksUri string) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
+func loadKeys(jwksUri string) ([]*rsaKey, []*ecdsaKey, error) {
 	resp, err := http.Get(jwksUri)
 
 	if err != nil {
@@ -870,21 +969,25 @@ func loadKeys(jwksUri string) ([]*rsa.PublicKey, []*ecdsa.PublicKey, error) {
 }
 
 func (serve *Serve) logoutIdp(rw http.ResponseWriter, req *http.Request) {
-	idp, err := serve.getIdpForRequest(req)
+	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
+		log.Println(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, "No IDP found", http.StatusNotFound)
-	} else if idp.postLogoutUrl == "" {
+	} else if i.postLogoutUrl == "" {
 		http.Error(rw, "not implemented", http.StatusNotImplemented)
-	} else if idp.discovered.EndSessionEndpoint != "" {
-		http.Redirect(rw, req, idp.endSessionUrl(req), http.StatusFound)
+	} else if i.discovered.EndSessionEndpoint != "" {
+		fmt.Println(redirectTo + i.endSessionUrl(req))
+		http.Redirect(rw, req, i.endSessionUrl(req), http.StatusFound)
 	} else {
-		http.Redirect(rw, req, idp.postLogoutUrl, http.StatusFound)
+		fmt.Println(redirectTo + i.postLogoutUrl)
+		http.Redirect(rw, req, i.postLogoutUrl, http.StatusFound)
 	}
 }
 
 func (serve *Serve) logoutSelf(rw http.ResponseWriter, req *http.Request, idp *idp) {
 	serve.setAccessTokenCookie(rw, req, deleted)
+	fmt.Println(redirectTo + serve.logoutSelfUrl(req, idp))
 	http.Redirect(rw, req, serve.logoutSelfUrl(req, idp), http.StatusFound)
 }
 
@@ -929,6 +1032,19 @@ func readEncryptionSecret(file string) (*encryptionSecret, error) {
 	return &sec, err
 }
 
+func (idp *idp) reloadKeys() error {
+	rsaKeys, ecdsaKeys, err := loadKeys(idp.discovered.JwksUri)
+
+	if err != nil {
+		return err
+	}
+
+	idp.rsaKeys = rsaKeys
+	idp.ecdsaKeys = ecdsaKeys
+
+	return nil
+}
+
 func removeParameter(u string, name string) string {
 	parsed, err := url.Parse(u)
 
@@ -941,6 +1057,10 @@ func removeParameter(u string, name string) string {
 	parsed.RawQuery = pars.Encode()
 
 	return parsed.String()
+}
+
+func requestToString(req *http.Request) string {
+	return req.Method + " " + req.URL.String() + " with headers " + headerToString(req.Header)
 }
 
 func scopeParameter(scopes []string) string {
@@ -970,7 +1090,6 @@ func (serve *Serve) setAccessTokenCookie(rw http.ResponseWriter, req *http.Reque
 		SameSite: http.SameSiteNoneMode,
 		Secure:   true,
 		HttpOnly: true,
-		Expires:  cookieExpires(value),
 	})
 }
 
@@ -1012,18 +1131,13 @@ func (idp *idp) tokenRequestBody(code string, req *http.Request) (io.Reader, err
 		nil
 }
 
-func trySpecificPublicKeys[T any](token string, keys []*T, serve *Serve) (*jwt.Token, error) {
-	var err error = nil
-	var validated *jwt.Token = nil
+func validate[T any](token string, key *T, serve *Serve) (*jwt.Token, error) {
+	validated, err := serve.parser.Parse(token, func(t *jwt.Token) (any, error) {
+		return key, nil
+	})
 
-	for i := 0; i < len(keys); i++ {
-		validated, err = serve.parser.Parse(token, func(t *jwt.Token) (any, error) {
-			return keys[i], nil
-		})
-
-		if err == nil {
-			return validated, nil
-		}
+	if err == nil {
+		return validated, nil
 	}
 
 	return nil, err
@@ -1077,11 +1191,24 @@ func (serve *Serve) validateIdToken(token string, idp *idp) (*jwt.Token, error) 
 
 func (serve *Serve) validateJwt(token *jwt.Token, unparsedToken string, idp *idp) (*jwt.Token, error) {
 	if strings.HasPrefix(token.Method.Alg(), "RS") {
-		return trySpecificPublicKeys(unparsedToken, idp.rsaKeys, serve)
+		k, err := idp.getRsaKey(token.Header[kid].(string))
+
+		if err != nil {
+			return nil, err
+		}
+
+		return validate(unparsedToken, k, serve)
 	}
 
-	if strings.HasPrefix(token.Method.Alg(), "EC") || strings.HasPrefix(token.Method.Alg(), "ES") {
-		return trySpecificPublicKeys(unparsedToken, idp.ecdsaKeys, serve)
+	if strings.HasPrefix(token.Method.Alg(), "EC") ||
+		strings.HasPrefix(token.Method.Alg(), "ES") {
+		k, err := idp.getEcdsaKey(token.Header[kid].(string))
+
+		if err != nil {
+			return nil, err
+		}
+
+		return validate(unparsedToken, k, serve)
 	}
 
 	return nil, errors.New("unsupported algorithm " + token.Method.Alg())
@@ -1097,21 +1224,21 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 	tok, err := serve.parseToken(token)
 
 	if err != nil {
-		log.Println(err.Error() + " for token " + token)
+		log.Println(err.Error() + forToken + token)
 		return nil, nil, err
 	}
 
 	issuer, err := tok.Claims.GetIssuer()
 
 	if err != nil {
-		log.Println(err.Error() + " for token " + token)
+		log.Println(err.Error() + forToken + token)
 		return nil, nil, err
 	}
 
 	i, err := serve.getIdpForIssuer(issuer)
 
 	if err != nil {
-		log.Println(err.Error() + " for token " + token)
+		log.Println(err.Error() + forToken + token)
 		return nil, nil, err
 	}
 
@@ -1121,7 +1248,7 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 		return t, i, nil
 	}
 
-	log.Println(err.Error() + " for token " + token)
+	log.Println(err.Error() + forToken + token)
 	return nil, nil, err
 }
 
