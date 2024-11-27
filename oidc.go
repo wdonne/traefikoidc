@@ -209,22 +209,9 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_, i, err := serve.validToken(req)
 
 		if err != nil {
-			if isXhr(req) {
-				http.Error(rw, "Unauthorized", http.StatusUnauthorized)
-			} else {
-				fmt.Println("Authenticating")
-				serve.authenticate(rw, req)
-			}
+			serve.handleInvalidToken(rw, req)
 		} else {
-			fmt.Println("Valid token")
-
-			if serve.isLogout(req) {
-				fmt.Println("Logging out")
-				serve.logoutSelf(rw, req, i)
-			} else {
-				serve.setTokenOnHeader(req)
-				serve.next.ServeHTTP(rw, req)
-			}
+			serve.handleValidToken(rw, req, i)
 		}
 	}
 }
@@ -652,6 +639,7 @@ func (serve *Serve) getAuthenticationResponse(req *http.Request) (*authenticatio
 		return nil, err
 	}
 
+	fmt.Println("Decrypted callback state: " + decrypted)
 	idpName := getIdp(decrypted)
 
 	return &authenticationResponse{
@@ -803,7 +791,46 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 }
 
 func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
-	return serve.getIdp(req.URL.Query().Get(idpField))
+	field := req.URL.Query().Get(idpField)
+
+	if field != "" {
+		return serve.getIdp(field)
+	}
+
+	token, _ := getToken(req)
+
+	if token != "" {
+		parsed, err := serve.parseToken(token)
+
+		if err != nil {
+			log.Println(err.Error() + forToken + token)
+			return nil, err
+		}
+
+		i, err := serve.getIdpForToken(parsed)
+
+		return i, nil
+	}
+
+	return serve.getIdp(defaultIdp)
+}
+
+func (serve *Serve) getIdpForToken(token *jwt.Token) (*idp, error) {
+	issuer, err := token.Claims.GetIssuer()
+
+	if err != nil {
+		log.Println(err.Error())
+		return nil, err
+	}
+
+	idp, err := serve.getIdpForIssuer(issuer)
+
+	if err != nil {
+		log.Println(err.Error())
+		return nil, err
+	}
+
+	return idp, nil
 }
 
 func (idp *idp) getRsaKey(kid string) (*rsa.PublicKey, error) {
@@ -844,7 +871,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	authRes, err := serve.getAuthenticationResponse(req)
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		log.Println("getAuthenticationResponse: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -853,7 +880,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdp(authRes.idp)
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		log.Println("getIdp: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -862,7 +889,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	tokenRes, err := i.getIdToken(authRes, req)
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		log.Println("getIdToken: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -871,13 +898,34 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	_, err = serve.validateIdToken(tokenRes.IdToken, i)
 
 	if err != nil {
-		log.Println(err.Error() + forToken + tokenRes.IdToken + " and" + forRequest +
-			requestToString(req))
+		log.Println("validateIdToken: " + err.Error() + forToken + tokenRes.IdToken + " and" +
+			forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 	} else {
 		serve.setAccessTokenCookie(rw, req, tokenRes.IdToken)
 		fmt.Println(redirectTo + authRes.originalUrl)
 		http.Redirect(rw, req, authRes.originalUrl, http.StatusFound)
+	}
+}
+
+func (serve *Serve) handleInvalidToken(rw http.ResponseWriter, req *http.Request) {
+	if isXhr(req) {
+		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
+	} else {
+		fmt.Println("Authenticating")
+		serve.authenticate(rw, req)
+	}
+}
+
+func (serve *Serve) handleValidToken(rw http.ResponseWriter, req *http.Request, idp *idp) {
+	fmt.Println("Valid token")
+
+	if serve.isLogout(req) {
+		fmt.Println("Logging out")
+		serve.logoutSelf(rw, req, idp)
+	} else {
+		serve.setTokenOnHeader(req)
+		serve.next.ServeHTTP(rw, req)
 	}
 }
 
@@ -1120,15 +1168,17 @@ func (idp *idp) tokenRequestBody(code string, req *http.Request) (io.Reader, err
 		return nil, err
 	}
 
-	return strings.NewReader("grant_type=authorization_code&code=" +
-			code +
-			"&client_id=" +
-			c.ClientID +
-			"&client_secret=" +
-			c.ClientSecret +
-			"&redirect_uri=" +
-			callbackUrl(req, idp.contextPath)),
-		nil
+	body := "grant_type=authorization_code&code=" +
+		url.QueryEscape(code) +
+		"&client_id=" +
+		url.QueryEscape(c.ClientID) +
+		"&client_secret=" +
+		url.QueryEscape(c.ClientSecret) +
+		"&redirect_uri=" +
+		callbackUrl(req, idp.contextPath)
+
+	fmt.Println("tokenRequestBody: " + body)
+	return strings.NewReader(body), nil
 }
 
 func validate[T any](token string, key *T, serve *Serve) (*jwt.Token, error) {
@@ -1228,14 +1278,7 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 		return nil, nil, err
 	}
 
-	issuer, err := tok.Claims.GetIssuer()
-
-	if err != nil {
-		log.Println(err.Error() + forToken + token)
-		return nil, nil, err
-	}
-
-	i, err := serve.getIdpForIssuer(issuer)
+	i, err := serve.getIdpForToken(tok)
 
 	if err != nil {
 		log.Println(err.Error() + forToken + token)
@@ -1248,7 +1291,10 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 		return t, i, nil
 	}
 
-	log.Println(err.Error() + forToken + token)
+	if err != nil {
+		log.Println(err.Error() + forToken + token)
+	}
+
 	return nil, nil, err
 }
 
