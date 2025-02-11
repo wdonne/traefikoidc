@@ -11,7 +11,7 @@ You log out with the URL `https://<your-domain>/<contextPath>/logout`. If the ID
 |Field|Mandatory|Default value|Description|
 |---|---|---|---|
 |contextPath|No|Empty string|The value is a path that is the prefix of the callback and logout URL paths. It is also the path used for the token cookie.|
-|encryptionSecretFile|Yes|None|This is a path to a JSON file with the field `secret`, containing an AES-compatible key. The key should be either 16, 24 or 32 characters long. You can inject the JSON file with a Kubernetes secret. The secret is used to encrypt the `state` field in the authorization code flow.|
+|encryptionSecretFile|Yes|None|This is a path to a JSON file with the field `secret`, containing an AES-compatible key. The key should be either 16, 24 or 32 characters long. You can inject the JSON file with a Kubernetes secret. The secret is used to encrypt the `state` field in the authorization code flow. It is interpreted as plain bytes, so a US-ASCII string would work.|
 |idps|Yes|None|The array of IDP configurations.|
 |idps.clientSecretFile|Yes|None|The value is a path to a JSON file with the fields `clientID` and `clientSecret`. You can inject the JSON file with a Kubernetes secret.|
 |idps.name|Yes|None|The name of the IDP. If the value is `default`, then this IDP will be used when none is provided through the URL query parameter `idp`.|
