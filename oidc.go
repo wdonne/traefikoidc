@@ -286,7 +286,7 @@ func (serve *Serve) authenticationUrl(req *http.Request, idp *idp) (string, erro
 			"&" +
 			stateField +
 			"=" +
-			url.QueryEscape(enc),
+			enc,
 		nil
 }
 
@@ -364,7 +364,7 @@ func decodeInt(s string) (int, error) {
 }
 
 func decrypt(s string, secret []byte) (string, error) {
-	decoded, err := base64.StdEncoding.DecodeString(s)
+	decoded, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(s)
 
 	if err != nil {
 		return "", err
@@ -502,7 +502,7 @@ func encrypt(s string, secret []byte) (string, error) {
 
 	encrypted := gcm.Seal(nonce, nonce, []byte(s), nil)
 
-	return base64.StdEncoding.EncodeToString(encrypted), nil
+	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(encrypted), nil
 }
 
 func (idp *idp) endSessionUrl(req *http.Request) string {
