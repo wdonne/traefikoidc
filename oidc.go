@@ -216,6 +216,25 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func addIdp(u *url.URL, idp string) *url.URL {
+	q, err := url.ParseQuery(u.RawQuery)
+
+	if err != nil {
+		log.Println(err.Error())
+		return u
+	}
+
+	if !q.Has(idpField) {
+		if u.RawQuery != "" {
+			u.RawQuery += "&" + idpField + "=" + idp
+		} else {
+			u.RawQuery = idpField + "=" + idp
+		}
+	}
+
+	return u
+}
+
 func appendEcdsa(ecdsaKeys []*ecdsaKey, k *key) ([]*ecdsaKey, error) {
 	extracted, err := extractEcdsaKey(k)
 
@@ -268,7 +287,7 @@ func (serve *Serve) authenticationUrl(req *http.Request, idp *idp) (string, erro
 		return "", err
 	}
 
-	enc, err := encrypt(req.URL.String(), sec)
+	enc, err := encrypt(addIdp(req.URL, idp.name).String(), sec)
 
 	if err != nil {
 		return "", err
