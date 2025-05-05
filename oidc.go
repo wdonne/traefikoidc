@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/golang-jwt/jwt/v5"
 	"io"
 	"log"
 	"math/big"
@@ -22,6 +21,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -162,7 +163,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	var idps []*idp = nil
 
 	if !config.LazyDiscovery {
-		var err error = nil
+		var err error
 		idps, err = discoverIdps(config)
 
 		if err != nil {
@@ -322,7 +323,7 @@ func bearerToken(req *http.Request) string {
 
 	parts := strings.Split(header, " ")
 
-	if len(parts) != 2 && !isBearer(parts[0]) {
+	if len(parts) != 2 || !isBearer(parts[0]) {
 		return ""
 	}
 
@@ -1002,8 +1003,7 @@ func isXhr(req *http.Request) bool {
 
 func (serve *Serve) lazyDiscoverIdps() error {
 	if serve.idps == nil {
-		var err error = nil
-
+		var err error
 		serve.idps, err = discoverIdps(serve.config)
 
 		if err != nil {
