@@ -810,11 +810,21 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 	return nil, errors.New("idp is not configured for issuer " + issuer)
 }
 
+func (serve *Serve) tryIdpForHost(host string) (*idp, error) {
+	return serve.getIdp(strings.Split(host, ".")[0])
+}
+
 func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 	field := req.URL.Query().Get(idpField)
 
 	if field != "" {
 		return serve.getIdp(field)
+	}
+
+	fromHost, _ := serve.tryIdpForHost(req.Host)
+
+	if fromHost != nil {
+		return fromHost, nil
 	}
 
 	token, _ := getToken(req)

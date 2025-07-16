@@ -2,7 +2,7 @@
 
 This middleware orchestrates the OpenID Connect authorization code flow. It intercepts requests and starts the flow if they don't bear a valid JWT. The ID token it obtains is used as an HTTP-only cookie called `access_token` to track the user. All forwarded requests will have a bearer token.
 
-Several IDPs can be configured. Requests can trigger the flow with the desired IDP by adding the URL query parameter `idp=<name>`. When this parameter is absent, the IDP with the name `default` will be used. If there is no matching IDP, the request will result in status code 401 (Unauthorized).
+Several IDPs can be configured. Requests can trigger the flow with the desired IDP by adding the URL query parameter `idp=<name>`. When this parameter is absent, the first segment of the domain name will be tried. If that IDP doesn't exist either, the IDP with the name `default` will be used. If there is no matching IDP, the request will result in status code 401 (Unauthorized).
 
 You log out with the URL `https://<your-domain>/<contextPath>/logout`. If the IDP has an end-session endpoint, the user will also be logged out of the IDP.
 
