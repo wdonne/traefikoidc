@@ -801,9 +801,17 @@ func getIdpForUrlAsString(u string) string {
 
 func (serve *Serve) getIdp(name string) (*idp, error) {
 	for i := 0; i < len(serve.idps); i++ {
-		if name == serve.idps[i].name || (name == "" && serve.idps[i].name == defaultIdp) {
+		if name == serve.idps[i].name {
 			fmt.Println("Using IDP " + serve.idps[i].name)
 			return serve.idps[i], nil
+		}
+	}
+
+	if name != defaultIdp {
+		tryDefault, _ := serve.getIdp(defaultIdp)
+
+		if tryDefault != nil {
+			return tryDefault, nil
 		}
 	}
 
@@ -823,7 +831,7 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 	i, _ := serve.getIdp(getIdpForUrl(req.URL))
 
-	if i != nil {
+	if i != nil && i.name != defaultIdp {
 		return i, nil
 	}
 
