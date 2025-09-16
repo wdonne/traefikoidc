@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -167,7 +167,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		idps, err = discoverIdps(config)
 
 		if err != nil {
-			log.Println(err.Error())
+			slog.Error(err.Error())
 			return nil, err
 		}
 	}
@@ -195,7 +195,7 @@ func (serve *Serve) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	err := serve.lazyDiscoverIdps()
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		slog.Error(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -221,7 +221,7 @@ func addIdp(u *url.URL, idp string) *url.URL {
 	q, err := url.ParseQuery(u.RawQuery)
 
 	if err != nil {
-		log.Println(err.Error())
+		slog.Error(err.Error())
 		return u
 	}
 
@@ -260,7 +260,7 @@ func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		slog.Error(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	} else {
 		u, err := serve.authenticationUrl(req, i)
@@ -269,7 +269,7 @@ func (serve *Serve) authenticate(rw http.ResponseWriter, req *http.Request) {
 			fmt.Println(redirectTo + u)
 			http.Redirect(rw, req, u, http.StatusFound)
 		} else {
-			log.Println(err.Error() + forRequest + requestToString(req))
+			slog.Error(err.Error() + forRequest + requestToString(req))
 			http.Error(rw, "Bad request", http.StatusBadRequest)
 		}
 	}
@@ -660,7 +660,7 @@ func (serve *Serve) getAuthenticationResponse(req *http.Request) (*authenticatio
 	}
 
 	fmt.Println("Decrypted callback state: " + decrypted)
-	idpName := getIdp(decrypted)
+	idpName := getIdpForUrlAsString(decrypted)
 
 	return &authenticationResponse{
 		code:        q.Get(codeField),
@@ -779,14 +779,24 @@ func (idp *idp) getIdToken(authRes *authenticationResponse, req *http.Request) (
 	return nil, errors.New(tokenRes.Status)
 }
 
-func getIdp(u string) string {
+func getIdpForUrl(u *url.URL) string {
+	idp := u.Query().Get(idpField)
+
+	if idp != "" {
+		return idp
+	}
+
+	return strings.Split(u.Host, ".")[0]
+}
+
+func getIdpForUrlAsString(u string) string {
 	parsed, err := url.Parse(u)
 
 	if err != nil {
 		return ""
 	}
 
-	return parsed.Query().Get(idpField)
+	return getIdpForUrl(parsed)
 }
 
 func (serve *Serve) getIdp(name string) (*idp, error) {
@@ -810,21 +820,11 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 	return nil, errors.New("idp is not configured for issuer " + issuer)
 }
 
-func (serve *Serve) tryIdpForHost(host string) (*idp, error) {
-	return serve.getIdp(strings.Split(host, ".")[0])
-}
-
 func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
-	field := req.URL.Query().Get(idpField)
+	i, _ := serve.getIdp(getIdpForUrl(req.URL))
 
-	if field != "" {
-		return serve.getIdp(field)
-	}
-
-	fromHost, _ := serve.tryIdpForHost(req.Host)
-
-	if fromHost != nil {
-		return fromHost, nil
+	if i != nil {
+		return i, nil
 	}
 
 	token, _ := getToken(req)
@@ -833,7 +833,7 @@ func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 		parsed, err := serve.parseToken(token)
 
 		if err != nil {
-			log.Println(err.Error() + forToken + token)
+			slog.Error(err.Error() + forToken + token)
 			return nil, err
 		}
 
@@ -849,14 +849,14 @@ func (serve *Serve) getIdpForToken(token *jwt.Token) (*idp, error) {
 	issuer, err := token.Claims.GetIssuer()
 
 	if err != nil {
-		log.Println(err.Error())
+		slog.Error(err.Error())
 		return nil, err
 	}
 
 	idp, err := serve.getIdpForIssuer(issuer)
 
 	if err != nil {
-		log.Println(err.Error())
+		slog.Error(err.Error())
 		return nil, err
 	}
 
@@ -901,7 +901,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	authRes, err := serve.getAuthenticationResponse(req)
 
 	if err != nil {
-		log.Println("getAuthenticationResponse: " + err.Error() + forRequest + requestToString(req))
+		slog.Error("getAuthenticationResponse: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -910,7 +910,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdp(authRes.idp)
 
 	if err != nil {
-		log.Println("getIdp: " + err.Error() + forRequest + requestToString(req))
+		slog.Error("getIdp: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -919,7 +919,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	tokenRes, err := i.getIdToken(authRes, req)
 
 	if err != nil {
-		log.Println("getIdToken: " + err.Error() + forRequest + requestToString(req))
+		slog.Error("getIdToken: " + err.Error() + forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -928,7 +928,7 @@ func (serve *Serve) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	_, err = serve.validateIdToken(tokenRes.IdToken, i)
 
 	if err != nil {
-		log.Println("validateIdToken: " + err.Error() + forToken + tokenRes.IdToken + " and" +
+		slog.Error("validateIdToken: " + err.Error() + forToken + tokenRes.IdToken + " and" +
 			forRequest + requestToString(req))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 	} else {
@@ -1017,7 +1017,7 @@ func (serve *Serve) lazyDiscoverIdps() error {
 		serve.idps, err = discoverIdps(serve.config)
 
 		if err != nil {
-			log.Println(err.Error())
+			slog.Error(err.Error())
 		}
 
 		return err
@@ -1049,7 +1049,7 @@ func (serve *Serve) logoutIdp(rw http.ResponseWriter, req *http.Request) {
 	i, err := serve.getIdpForRequest(req)
 
 	if err != nil {
-		log.Println(err.Error() + forRequest + requestToString(req))
+		slog.Error(err.Error() + forRequest + requestToString(req))
 		http.Error(rw, "No IDP found", http.StatusNotFound)
 	} else if i.postLogoutUrl == "" {
 		http.Error(rw, "not implemented", http.StatusNotImplemented)
@@ -1186,7 +1186,7 @@ func (serve *Serve) setTokenOnHeader(req *http.Request) {
 
 func streamCloser(closer io.Closer, errorMessage string) {
 	if err := closer.Close(); err != nil {
-		log.Println(errorMessage + "\n" + err.Error())
+		slog.Error(errorMessage + "\n" + err.Error())
 	}
 }
 
@@ -1303,14 +1303,14 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 	tok, err := serve.parseToken(token)
 
 	if err != nil {
-		log.Println(err.Error() + forToken + token)
+		slog.Error(err.Error() + forToken + token)
 		return nil, nil, err
 	}
 
 	i, err := serve.getIdpForToken(tok)
 
 	if err != nil {
-		log.Println(err.Error() + forToken + token)
+		slog.Error(err.Error() + forToken + token)
 		return nil, nil, err
 	}
 
@@ -1321,7 +1321,7 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *idp, error) {
 	}
 
 	if err != nil {
-		log.Println(err.Error() + forToken + token)
+		slog.Error(err.Error() + forToken + token)
 	}
 
 	return nil, nil, err
