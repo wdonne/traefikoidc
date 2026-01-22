@@ -86,3 +86,5 @@ deployment:
 additionalArguments:
   - "--experimental.localPlugins.traefikoidc.modulename=github.com/wdonne/traefikoidc"
 ```
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wdonne/traefikoidc)
