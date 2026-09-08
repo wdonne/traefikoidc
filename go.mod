@@ -1,5 +1,5 @@
 module github.com/wdonne/traefikoidc
 
-go 1.24.2
+go 1.26.4
 
-require github.com/golang-jwt/jwt/v5 v5.3.0
+require github.com/golang-jwt/jwt/v5 v5.3.1
