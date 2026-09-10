@@ -41,6 +41,7 @@ const (
 	logoutself                  = "/logoutself"
 	offlineAccess               = "offline_access"
 	onBehalfOfCallback          = "/onbehalfof"
+	originalIss                 = "originalIss"
 	redirectTo                  = "Redirect to "
 	requestedWithHeader         = "X-Requested-With"
 	sig                         = "sig"
@@ -338,6 +339,16 @@ func (serve *Serve) getIdpForIssuer(issuer string) (*idp, error) {
 	return nil, errors.New("idp is not configured for issuer " + issuer)
 }
 
+func (serve *Serve) getIdpForIssuerOrOriginalIssuer(issuer string, originalIssuer string) (*idp, error) {
+	i, _ := serve.getIdpForIssuer(issuer)
+
+	if i != nil {
+		return i, nil
+	}
+
+	return serve.getIdpForIssuer(originalIssuer)
+}
+
 func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 	i, _ := serve.getIdp(getIdpForUrl(req.URL))
 
@@ -345,22 +356,26 @@ func (serve *Serve) getIdpForRequest(req *http.Request) (*idp, error) {
 		return i, nil
 	}
 
-	token, _, _ := serve.getParsedToken(req)
+	token, claims, _ := serve.getParsedToken(req)
 
 	if token != nil {
-		return serve.getIdpForToken(token)
+		i, _ = serve.getIdpForToken(token, claims)
+
+		if i != nil {
+			return i, nil
+		}
 	}
 
 	return serve.getIdp(defaultIdp)
 }
 
-func (serve *Serve) getIdpForToken(token *jwt.Token) (*idp, error) {
+func (serve *Serve) getIdpForToken(token *jwt.Token, claims *jwt.MapClaims) (*idp, error) {
 	issuer, err := token.Claims.GetIssuer()
 	if err != nil {
 		return nil, err
 	}
 
-	idp, err := serve.getIdpForIssuer(issuer)
+	idp, err := serve.getIdpForIssuerOrOriginalIssuer(issuer, (*claims)[originalIss].(string))
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +397,7 @@ func (serve *Serve) getParsedToken(req *http.Request) (*jwt.Token, *jwt.MapClaim
 	return tok, claims, nil
 }
 
-func (serve *Serve) getVerifierForToken(token *jwt.Token) (*verifier, error) {
+func (serve *Serve) getVerifierForToken(token *jwt.Token, claims *jwt.MapClaims) (*verifier, error) {
 	issuer, err := token.Claims.GetIssuer()
 	if err != nil {
 		return nil, err
@@ -392,7 +407,7 @@ func (serve *Serve) getVerifierForToken(token *jwt.Token) (*verifier, error) {
 		return serve.internalVerifier, nil
 	}
 
-	idp, err := serve.getIdpForIssuer(issuer)
+	idp, err := serve.getIdpForIssuerOrOriginalIssuer(issuer, (*claims)[originalIss].(string))
 	if err != nil {
 		return nil, err
 	}
@@ -789,7 +804,7 @@ func (serve *Serve) validToken(req *http.Request) (*jwt.Token, *jwt.MapClaims, e
 		return nil, nil, err
 	}
 
-	verifier, err := serve.getVerifierForToken(token)
+	verifier, err := serve.getVerifierForToken(token, claims)
 	if err != nil {
 		return nil, nil, err
 	}
